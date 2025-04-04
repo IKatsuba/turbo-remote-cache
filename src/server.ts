@@ -54,6 +54,7 @@ export const app = new Hono<{
   };
   Variables: {
     s3: S3Client;
+    team: string;
   };
 }>();
 
@@ -62,6 +63,18 @@ app.use(cors());
 app.use(
   (c, next) => bearerAuth({ token: c.env.TURBO_API_TOKEN })(c, next),
 );
+app.use(async (c, next) => {
+  const teamId = c.req.query('teamId');
+  const slug = c.req.query('slug');
+
+  if (!teamId && !slug) {
+    return c.json({ error: 'Either teamId or slug must be provided' }, 400);
+  }
+
+  c.set('team', teamId || slug!);
+
+  await next();
+});
 
 app.use(async (c, next) => {
   c.set(
@@ -80,8 +93,10 @@ app.use(async (c, next) => {
   await next();
 });
 
+// POST /v8/artifacts/events
 app.post('/v8/artifacts/events', async (c: Context) => {
   try {
+    const teamIdentifier = c.get('team');
     const events = await c.req.json<ArtifactEvent[]>();
 
     for (const event of events) {
@@ -94,7 +109,9 @@ app.post('/v8/artifacts/events', async (c: Context) => {
       }
     }
 
-    console.log(`Processed ${events.length} artifact events`);
+    console.log(
+      `Processed ${events.length} artifact events for team ${teamIdentifier}`,
+    );
     return c.json({ success: true });
   } catch (error) {
     console.error('Error processing artifact events:', error);
@@ -102,6 +119,7 @@ app.post('/v8/artifacts/events', async (c: Context) => {
   }
 });
 
+// GET /v8/artifacts/status
 app.get('/v8/artifacts/status', (c: Context) => {
   const response: ArtifactStatusResponse = {
     status: 'enabled',
@@ -109,8 +127,10 @@ app.get('/v8/artifacts/status', (c: Context) => {
   return c.json(response);
 });
 
+// PUT /v8/artifacts/{hash}
 app.put('/v8/artifacts/:hash', async (c: Context) => {
   try {
+    const teamIdentifier = c.get('team');
     const hash = c.req.param('hash');
     const contentLength = parseInt(c.req.header('Content-Length') || '0');
     const duration = parseInt(c.req.header('x-artifact-duration') || '0');
@@ -124,7 +144,7 @@ app.put('/v8/artifacts/:hash', async (c: Context) => {
 
     const command = new PutObjectCommand({
       Bucket: c.env.S3_BUCKET_NAME,
-      Key: `artifacts/${hash}`,
+      Key: `artifacts/${teamIdentifier}/${hash}`,
       Body: new Uint8Array(artifactData),
       ContentLength: contentLength,
       Metadata: {
@@ -137,35 +157,31 @@ app.put('/v8/artifacts/:hash', async (c: Context) => {
 
     const response: ArtifactUploadResponse = {
       urls: [
-        `${c.env.PUBLIC_URL}/v8/artifacts/${hash}`,
+        `${c.env.PUBLIC_URL}/v8/artifacts/${hash}?teamId=${teamIdentifier}`,
       ],
     };
 
     return c.json(response, 202);
   } catch (error) {
     console.error('Error uploading artifact:', error);
-    return c.json({ error: 'Failed to upload artifact' }, 400);
+    return c.json({ error: 'Failed to upload artifact' }, 500);
   }
 });
 
 // GET /v8/artifacts/{hash}
 app.get('/v8/artifacts/:hash', async (c: Context) => {
   try {
+    const teamIdentifier = c.get('team');
     const hash = c.req.param('hash');
 
-    const command = c.req.method === 'HEAD'
-      ? new HeadObjectCommand({
-        Bucket: c.env.S3_BUCKET_NAME,
-        Key: `artifacts/${hash}`,
-      })
-      : new GetObjectCommand({
-        Bucket: c.env.S3_BUCKET_NAME,
-        Key: `artifacts/${hash}`,
-      });
+    const command = new GetObjectCommand({
+      Bucket: c.env.S3_BUCKET_NAME,
+      Key: `artifacts/${teamIdentifier}/${hash}`,
+    });
 
     const response = await c.get('s3').send(command);
 
-    if (!response.Body && c.req.method === 'GET') {
+    if (!response.Body) {
       return c.json({ error: 'Artifact not found' }, 404);
     }
 
@@ -191,6 +207,7 @@ app.get('/v8/artifacts/:hash', async (c: Context) => {
 // POST /v8/artifacts
 app.post('/v8/artifacts', async (c: Context) => {
   try {
+    const teamIdentifier = c.get('team');
     const { hashes } = await c.req.json<ArtifactQueryRequest>();
 
     if (!Array.isArray(hashes)) {
@@ -203,7 +220,7 @@ app.post('/v8/artifacts', async (c: Context) => {
       try {
         const command = new HeadObjectCommand({
           Bucket: c.env.S3_BUCKET_NAME,
-          Key: `artifacts/${hash}`,
+          Key: `artifacts/${teamIdentifier}/${hash}`,
         });
 
         const result = await c.get('s3').send(command);
@@ -225,7 +242,7 @@ app.post('/v8/artifacts', async (c: Context) => {
     return c.json(response);
   } catch (error) {
     console.error('Error querying artifacts:', error);
-    return c.json({ error: 'Failed to query artifacts' }, 400);
+    return c.json({ error: 'Failed to query artifacts' }, 500);
   }
 });
 
