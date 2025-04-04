@@ -7,8 +7,8 @@
     "singleQuote": true
   },
   "tasks": {
-    "start": "deno run --allow-env --allow-net --allow-sys --env-file=.env src/index.ts",
-    "dev": "deno run --watch --allow-env --allow-net --allow-sys --env-file=.env.local src/index.ts",
+    "start": "deno run --allow-env --allow-net --allow-sys --env-file=.env src/server.ts",
+    "dev": "deno run --watch --allow-env --allow-net --allow-sys --env-file=.env.local src/server.ts",
     "test": "deno test --allow-env --allow-net --allow-sys --allow-read --env-file=.env.local"
   }
 }
