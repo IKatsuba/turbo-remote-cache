@@ -61,7 +61,11 @@ export const app = new Hono<{
 app.use(logger());
 app.use(cors());
 app.use(
-  (c, next) => bearerAuth({ token: c.env.TURBO_API_TOKEN })(c, next),
+  async (c, next) => {
+    console.log('TURBO_API_TOKEN', c.env.TURBO_API_TOKEN);
+
+    await bearerAuth({ token: c.env.TURBO_API_TOKEN })(c, next);
+  },
 );
 app.use(async (c, next) => {
   const teamId = c.req.query('teamId');
@@ -261,6 +265,7 @@ if (import.meta.main) {
         S3_ENDPOINT_URL: Deno.env.get('S3_ENDPOINT_URL') ||
           'http://localhost:9000',
         PUBLIC_URL: Deno.env.get('PUBLIC_URL') || 'http://localhost:1235',
+        TURBO_API_TOKEN: Deno.env.get('TURBO_API_TOKEN'),
       }),
     onListen({ port }) {
       console.log(`Server running on http://localhost:${port}`);
