@@ -6,8 +6,14 @@ async function makeRequest(
   path: string,
   headers: Record<string, string> = {},
   body?: BodyInit,
+  teamId?: string,
 ) {
-  const req = new Request(`http://localhost${path}`, {
+  const url = new URL(`http://localhost${path}`);
+  if (teamId) {
+    url.searchParams.set('teamId', teamId);
+  }
+
+  const req = new Request(url.toString(), {
     method,
     headers: {
       'Authorization': 'Bearer test-token',
@@ -27,6 +33,14 @@ async function makeRequest(
   });
 }
 
+// Test team validation
+Deno.test('Missing teamId/slug - Returns 400', async () => {
+  const response = await makeRequest('GET', '/v8/artifacts/status');
+  assertEquals(response.status, 400);
+  const body = await response.json();
+  assertEquals(body.error, 'Either teamId or slug must be provided');
+});
+
 // POST /v8/artifacts/events tests
 Deno.test('POST /v8/artifacts/events - Success', async () => {
   const events = [{
@@ -42,6 +56,7 @@ Deno.test('POST /v8/artifacts/events - Success', async () => {
     '/v8/artifacts/events',
     { 'Content-Type': 'application/json' },
     JSON.stringify(events),
+    'test-team',
   );
 
   assertEquals(response.status, 200);
@@ -63,6 +78,7 @@ Deno.test('POST /v8/artifacts/events - Invalid Event', async () => {
     '/v8/artifacts/events',
     { 'Content-Type': 'application/json' },
     JSON.stringify(events),
+    'test-team',
   );
 
   assertEquals(response.status, 400);
@@ -72,7 +88,13 @@ Deno.test('POST /v8/artifacts/events - Invalid Event', async () => {
 
 // GET /v8/artifacts/status tests
 Deno.test('GET /v8/artifacts/status - Success', async () => {
-  const response = await makeRequest('GET', '/v8/artifacts/status');
+  const response = await makeRequest(
+    'GET',
+    '/v8/artifacts/status',
+    {},
+    undefined,
+    'test-team',
+  );
 
   assertEquals(response.status, 200);
   const body = await response.json();
@@ -94,12 +116,16 @@ Deno.test('PUT /v8/artifacts/{hash} - Success', async () => {
       'x-artifact-tag': 'test-tag',
     },
     testData,
+    'test-team',
   );
 
   assertEquals(response.status, 202);
   const body = await response.json();
   assertExists(body.urls);
-  assertEquals(body.urls[0], `http://localhost:1235/v8/artifacts/${hash}`);
+  assertEquals(
+    body.urls[0],
+    `http://localhost:1235/v8/artifacts/${hash}?teamId=test-team`,
+  );
 });
 
 Deno.test('PUT /v8/artifacts/{hash} - Invalid Content Length', async () => {
@@ -114,6 +140,7 @@ Deno.test('PUT /v8/artifacts/{hash} - Invalid Content Length', async () => {
       'Content-Length': '0', // Invalid content length
     },
     testData,
+    'test-team',
   );
 
   assertEquals(response.status, 400);
@@ -136,10 +163,17 @@ Deno.test('GET /v8/artifacts/{hash} - Success', async () => {
       'x-artifact-tag': 'test-tag',
     },
     testData,
+    'test-team',
   );
 
   // Then try to get it
-  const response = await makeRequest('GET', `/v8/artifacts/${hash}`);
+  const response = await makeRequest(
+    'GET',
+    `/v8/artifacts/${hash}`,
+    {},
+    undefined,
+    'test-team',
+  );
 
   assertEquals(response.status, 200);
   assertEquals(
@@ -154,7 +188,13 @@ Deno.test('GET /v8/artifacts/{hash} - Success', async () => {
 
 Deno.test('GET /v8/artifacts/{hash} - Not Found', async () => {
   const hash = crypto.randomUUID();
-  const response = await makeRequest('GET', `/v8/artifacts/${hash}`);
+  const response = await makeRequest(
+    'GET',
+    `/v8/artifacts/${hash}`,
+    {},
+    undefined,
+    'test-team',
+  );
 
   assertEquals(response.status, 404);
   const body = await response.json();
@@ -176,10 +216,17 @@ Deno.test('HEAD /v8/artifacts/{hash} - Success', async () => {
       'x-artifact-tag': 'test-tag',
     },
     testData,
+    'test-team',
   );
 
   // Then check if it exists
-  const response = await makeRequest('HEAD', `/v8/artifacts/${hash}`);
+  const response = await makeRequest(
+    'HEAD',
+    `/v8/artifacts/${hash}`,
+    {},
+    undefined,
+    'test-team',
+  );
 
   assertEquals(response.status, 200);
   assertEquals(
@@ -191,7 +238,13 @@ Deno.test('HEAD /v8/artifacts/{hash} - Success', async () => {
 
 Deno.test('HEAD /v8/artifacts/{hash} - Not Found', async () => {
   const hash = crypto.randomUUID();
-  const response = await makeRequest('HEAD', `/v8/artifacts/${hash}`);
+  const response = await makeRequest(
+    'HEAD',
+    `/v8/artifacts/${hash}`,
+    {},
+    undefined,
+    'test-team',
+  );
 
   assertEquals(response.status, 404);
   const body = await response.text();
@@ -214,6 +267,7 @@ Deno.test('POST /v8/artifacts - Success', async () => {
       'x-artifact-tag': 'test-tag',
     },
     testData,
+    'test-team',
   );
 
   // Then query its information
@@ -222,6 +276,7 @@ Deno.test('POST /v8/artifacts - Success', async () => {
     '/v8/artifacts',
     { 'Content-Type': 'application/json' },
     JSON.stringify({ hashes: [hash] }),
+    'test-team',
   );
 
   assertEquals(response.status, 200);
@@ -240,6 +295,7 @@ Deno.test('POST /v8/artifacts - Not Found', async () => {
     '/v8/artifacts',
     { 'Content-Type': 'application/json' },
     JSON.stringify({ hashes: [hash] }),
+    'test-team',
   );
 
   assertEquals(response.status, 200);

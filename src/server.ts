@@ -1,14 +1,14 @@
-import { Hono } from 'npm:hono';
-import { cors } from 'npm:hono/cors';
-import { bearerAuth } from 'npm:hono/bearer-auth';
-import { logger } from 'npm:hono/logger';
-import { Context } from 'npm:hono';
+import { Hono } from 'hono';
+import { cors } from 'hono/cors';
+import { bearerAuth } from 'hono/bearer-auth';
+import { logger } from 'hono/logger';
+import { Context } from 'hono';
 import {
   GetObjectCommand,
   HeadObjectCommand,
   PutObjectCommand,
   S3Client,
-} from 'npm:@aws-sdk/client-s3';
+} from '@aws-sdk/client-s3';
 
 interface ArtifactEvent {
   sessionId: string;
