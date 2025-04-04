@@ -9,9 +9,7 @@ import {
   PutObjectCommand,
   S3Client,
 } from 'npm:@aws-sdk/client-s3';
-import { getSignedUrl } from 'npm:@aws-sdk/s3-request-presigner';
 
-// Define types based on the OpenAPI spec
 interface ArtifactEvent {
   sessionId: string;
   source: 'LOCAL' | 'REMOTE';
@@ -44,33 +42,48 @@ interface ArtifactUploadResponse {
   urls: string[];
 }
 
-// Configure S3 client
-const s3Client = new S3Client({
-  region: Deno.env.get('AWS_REGION') || 'us-east-1',
-  credentials: {
-    accessKeyId: Deno.env.get('AWS_ACCESS_KEY_ID')!,
-    secretAccessKey: Deno.env.get('AWS_SECRET_ACCESS_KEY')!,
-  },
-});
+export const app = new Hono<{
+  Bindings: {
+    TURBO_API_TOKEN: string;
+    S3_BUCKET_NAME: string;
+    AWS_REGION: string;
+    AWS_ACCESS_KEY_ID: string;
+    AWS_SECRET_ACCESS_KEY: string;
+    S3_ENDPOINT_URL: string;
+    PUBLIC_URL: string;
+  };
+  Variables: {
+    s3: S3Client;
+  };
+}>();
 
-const BUCKET_NAME = Deno.env.get('S3_BUCKET_NAME')!;
-
-// Create a new Hono app
-const app = new Hono();
-
-// Add middleware
 app.use(logger());
 app.use(cors());
 app.use(
   bearerAuth({ token: Deno.env.get('TURBO_API_TOKEN')! }),
 );
 
-// POST /v8/artifacts/events
+app.use(async (c, next) => {
+  c.set(
+    's3',
+    new S3Client({
+      region: c.env.AWS_REGION,
+      endpoint: c.env.S3_ENDPOINT_URL,
+      credentials: {
+        accessKeyId: c.env.AWS_ACCESS_KEY_ID,
+        secretAccessKey: c.env.AWS_SECRET_ACCESS_KEY,
+      },
+      forcePathStyle: true,
+    }),
+  );
+
+  await next();
+});
+
 app.post('/v8/artifacts/events', async (c: Context) => {
   try {
     const events = await c.req.json<ArtifactEvent[]>();
 
-    // Validate events
     for (const event of events) {
       if (!event.sessionId || !event.source || !event.hash || !event.event) {
         return c.json({ error: 'Invalid event data' }, 400);
@@ -89,7 +102,6 @@ app.post('/v8/artifacts/events', async (c: Context) => {
   }
 });
 
-// GET /v8/artifacts/status
 app.get('/v8/artifacts/status', (c: Context) => {
   const response: ArtifactStatusResponse = {
     status: 'enabled',
@@ -97,7 +109,6 @@ app.get('/v8/artifacts/status', (c: Context) => {
   return c.json(response);
 });
 
-// PUT /v8/artifacts/{hash}
 app.put('/v8/artifacts/:hash', async (c: Context) => {
   try {
     const hash = c.req.param('hash');
@@ -111,9 +122,8 @@ app.put('/v8/artifacts/:hash', async (c: Context) => {
 
     const artifactData = await c.req.arrayBuffer();
 
-    // Upload to S3
     const command = new PutObjectCommand({
-      Bucket: BUCKET_NAME,
+      Bucket: c.env.S3_BUCKET_NAME,
       Key: `artifacts/${hash}`,
       Body: new Uint8Array(artifactData),
       ContentLength: contentLength,
@@ -123,18 +133,12 @@ app.put('/v8/artifacts/:hash', async (c: Context) => {
       },
     });
 
-    await s3Client.send(command);
-
-    // Generate a signed URL for the artifact
-    const getCommand = new GetObjectCommand({
-      Bucket: BUCKET_NAME,
-      Key: `artifacts/${hash}`,
-    });
-
-    const url = await getSignedUrl(s3Client, getCommand, { expiresIn: 3600 });
+    await c.get('s3').send(command);
 
     const response: ArtifactUploadResponse = {
-      urls: [url],
+      urls: [
+        `${c.env.PUBLIC_URL}/v8/artifacts/${hash}`,
+      ],
     };
 
     return c.json(response, 202);
@@ -150,11 +154,11 @@ app.get('/v8/artifacts/:hash', async (c: Context) => {
     const hash = c.req.param('hash');
 
     const command = new GetObjectCommand({
-      Bucket: BUCKET_NAME,
+      Bucket: c.env.S3_BUCKET_NAME,
       Key: `artifacts/${hash}`,
     });
 
-    const response = await s3Client.send(command);
+    const response = await c.get('s3').send(command);
 
     if (!response.Body) {
       return c.json({ error: 'Artifact not found' }, 404);
@@ -193,11 +197,11 @@ app.post('/v8/artifacts', async (c: Context) => {
     for (const hash of hashes) {
       try {
         const command = new HeadObjectCommand({
-          Bucket: BUCKET_NAME,
+          Bucket: c.env.S3_BUCKET_NAME,
           Key: `artifacts/${hash}`,
         });
 
-        const result = await s3Client.send(command);
+        const result = await c.get('s3').send(command);
 
         response[hash] = {
           size: result.ContentLength || 0,
@@ -220,13 +224,24 @@ app.post('/v8/artifacts', async (c: Context) => {
   }
 });
 
-// Start the server
-const port = parseInt(Deno.env.get('PORT') || '1235');
+if (import.meta.main) {
+  const port = parseInt(Deno.env.get('PORT') || '1235');
 
-Deno.serve({
-  port,
-  handler: app.fetch,
-  onListen({ port }) {
-    console.log(`Server running on http://localhost:${port}`);
-  },
-});
+  Deno.serve({
+    port,
+    handler: (req) =>
+      app.fetch(req, {
+        NX_CACHE_ACCESS_TOKEN: Deno.env.get('NX_CACHE_ACCESS_TOKEN'),
+        AWS_REGION: Deno.env.get('AWS_REGION') || 'us-east-1',
+        AWS_ACCESS_KEY_ID: Deno.env.get('AWS_ACCESS_KEY_ID'),
+        AWS_SECRET_ACCESS_KEY: Deno.env.get('AWS_SECRET_ACCESS_KEY'),
+        S3_BUCKET_NAME: Deno.env.get('S3_BUCKET_NAME') || 'nx-cloud',
+        S3_ENDPOINT_URL: Deno.env.get('S3_ENDPOINT_URL') ||
+          'http://localhost:9000',
+        PUBLIC_URL: Deno.env.get('PUBLIC_URL') || 'http://localhost:1235',
+      }),
+    onListen({ port }) {
+      console.log(`Server running on http://localhost:${port}`);
+    },
+  });
+}
