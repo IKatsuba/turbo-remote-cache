@@ -2,7 +2,7 @@ import { Hono } from 'npm:hono';
 import { cors } from 'npm:hono/cors';
 import { bearerAuth } from 'npm:hono/bearer-auth';
 import { logger } from 'npm:hono/logger';
-import { Context } from 'npm:hono/context';
+import { Context } from 'npm:hono';
 import {
   GetObjectCommand,
   HeadObjectCommand,
@@ -60,7 +60,7 @@ export const app = new Hono<{
 app.use(logger());
 app.use(cors());
 app.use(
-  bearerAuth({ token: Deno.env.get('TURBO_API_TOKEN')! }),
+  (c, next) => bearerAuth({ token: c.env.TURBO_API_TOKEN })(c, next),
 );
 
 app.use(async (c, next) => {
@@ -153,14 +153,19 @@ app.get('/v8/artifacts/:hash', async (c: Context) => {
   try {
     const hash = c.req.param('hash');
 
-    const command = new GetObjectCommand({
-      Bucket: c.env.S3_BUCKET_NAME,
-      Key: `artifacts/${hash}`,
-    });
+    const command = c.req.method === 'HEAD'
+      ? new HeadObjectCommand({
+        Bucket: c.env.S3_BUCKET_NAME,
+        Key: `artifacts/${hash}`,
+      })
+      : new GetObjectCommand({
+        Bucket: c.env.S3_BUCKET_NAME,
+        Key: `artifacts/${hash}`,
+      });
 
     const response = await c.get('s3').send(command);
 
-    if (!response.Body) {
+    if (!response.Body && c.req.method === 'GET') {
       return c.json({ error: 'Artifact not found' }, 404);
     }
 
@@ -235,7 +240,7 @@ if (import.meta.main) {
         AWS_REGION: Deno.env.get('AWS_REGION') || 'us-east-1',
         AWS_ACCESS_KEY_ID: Deno.env.get('AWS_ACCESS_KEY_ID'),
         AWS_SECRET_ACCESS_KEY: Deno.env.get('AWS_SECRET_ACCESS_KEY'),
-        S3_BUCKET_NAME: Deno.env.get('S3_BUCKET_NAME') || 'nx-cloud',
+        S3_BUCKET_NAME: Deno.env.get('S3_BUCKET_NAME') || 'remote-cache',
         S3_ENDPOINT_URL: Deno.env.get('S3_ENDPOINT_URL') ||
           'http://localhost:9000',
         PUBLIC_URL: Deno.env.get('PUBLIC_URL') || 'http://localhost:1235',
