@@ -230,7 +230,7 @@ app.post('/v8/artifacts', async (c: Context) => {
           taskDurationMs: parseInt(result.Metadata?.duration || '0'),
           tag: result.Metadata?.tag,
         };
-      } catch (error) {
+      } catch (_error) {
         response[hash] = {
           error: {
             message: 'Artifact not found',

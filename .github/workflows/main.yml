@@ -53,7 +53,7 @@ jobs:
       - checks
     env:
       REGISTRY: ghcr.io
-      IMAGE_NAME: ikatsuba/turborepo-cache-server
+      IMAGE_NAME: ikatsuba/turbo-remote-cache
     permissions:
       contents: read
       packages: write
