@@ -3,6 +3,13 @@ import { cors } from 'npm:hono/cors';
 import { bearerAuth } from 'npm:hono/bearer-auth';
 import { logger } from 'npm:hono/logger';
 import { Context } from 'npm:hono/context';
+import {
+  GetObjectCommand,
+  HeadObjectCommand,
+  PutObjectCommand,
+  S3Client,
+} from 'npm:@aws-sdk/client-s3';
+import { getSignedUrl } from 'npm:@aws-sdk/s3-request-presigner';
 
 // Define types based on the OpenAPI spec
 interface ArtifactEvent {
@@ -37,6 +44,17 @@ interface ArtifactUploadResponse {
   urls: string[];
 }
 
+// Configure S3 client
+const s3Client = new S3Client({
+  region: Deno.env.get('AWS_REGION') || 'us-east-1',
+  credentials: {
+    accessKeyId: Deno.env.get('AWS_ACCESS_KEY_ID')!,
+    secretAccessKey: Deno.env.get('AWS_SECRET_ACCESS_KEY')!,
+  },
+});
+
+const BUCKET_NAME = Deno.env.get('S3_BUCKET_NAME')!;
+
 // Create a new Hono app
 const app = new Hono();
 
@@ -47,14 +65,10 @@ app.use(
   bearerAuth({ token: Deno.env.get('TURBO_API_TOKEN')! }),
 );
 
-// In-memory storage for artifacts (replace with actual storage in production)
-const artifactStorage: Record<string, Uint8Array> = {};
-const artifactMetadata: Record<string, { size: number; tag?: string }> = {};
-
 // POST /v8/artifacts/events
 app.post('/v8/artifacts/events', async (c: Context) => {
   try {
-    const events = await c.req.json() as ArtifactEvent[];
+    const events = await c.req.json<ArtifactEvent[]>();
 
     // Validate events
     for (const event of events) {
@@ -62,15 +76,12 @@ app.post('/v8/artifacts/events', async (c: Context) => {
         return c.json({ error: 'Invalid event data' }, 400);
       }
 
-      // If event is HIT and duration is not provided, return 400
       if (event.event === 'HIT' && event.duration === undefined) {
         return c.json({ error: 'Duration is required for HIT events' }, 400);
       }
     }
 
-    // Process events (in a real implementation, you would store these events)
     console.log(`Processed ${events.length} artifact events`);
-
     return c.json({ success: true });
   } catch (error) {
     console.error('Error processing artifact events:', error);
@@ -80,11 +91,9 @@ app.post('/v8/artifacts/events', async (c: Context) => {
 
 // GET /v8/artifacts/status
 app.get('/v8/artifacts/status', (c: Context) => {
-  // In a real implementation, you would check the actual status
   const response: ArtifactStatusResponse = {
     status: 'enabled',
   };
-
   return c.json(response);
 });
 
@@ -100,19 +109,32 @@ app.put('/v8/artifacts/:hash', async (c: Context) => {
       return c.json({ error: 'Invalid Content-Length' }, 400);
     }
 
-    // Read the artifact data
     const artifactData = await c.req.arrayBuffer();
 
-    // Store the artifact
-    artifactStorage[hash] = new Uint8Array(artifactData);
-    artifactMetadata[hash] = {
-      size: contentLength,
-      tag,
-    };
+    // Upload to S3
+    const command = new PutObjectCommand({
+      Bucket: BUCKET_NAME,
+      Key: `artifacts/${hash}`,
+      Body: new Uint8Array(artifactData),
+      ContentLength: contentLength,
+      Metadata: {
+        duration: duration.toString(),
+        ...(tag ? { tag } : {}),
+      },
+    });
 
-    // Return the URLs where the artifact was stored
+    await s3Client.send(command);
+
+    // Generate a signed URL for the artifact
+    const getCommand = new GetObjectCommand({
+      Bucket: BUCKET_NAME,
+      Key: `artifacts/${hash}`,
+    });
+
+    const url = await getSignedUrl(s3Client, getCommand, { expiresIn: 3600 });
+
     const response: ArtifactUploadResponse = {
-      urls: [`https://api.vercel.com/v2/now/artifact/${hash}`],
+      urls: [url],
     };
 
     return c.json(response, 202);
@@ -123,38 +145,44 @@ app.put('/v8/artifacts/:hash', async (c: Context) => {
 });
 
 // GET /v8/artifacts/{hash}
-app.get('/v8/artifacts/:hash', (c: Context) => {
-  const hash = c.req.param('hash');
+app.get('/v8/artifacts/:hash', async (c: Context) => {
+  try {
+    const hash = c.req.param('hash');
 
-  // Check if the artifact exists
-  if (!artifactStorage[hash]) {
+    const command = new GetObjectCommand({
+      Bucket: BUCKET_NAME,
+      Key: `artifacts/${hash}`,
+    });
+
+    const response = await s3Client.send(command);
+
+    if (!response.Body) {
+      return c.json({ error: 'Artifact not found' }, 404);
+    }
+
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/octet-stream',
+      'Content-Length': response.ContentLength?.toString() || '0',
+    };
+
+    if (response.Metadata?.tag) {
+      headers['x-artifact-tag'] = response.Metadata.tag;
+    }
+
+    return new Response(
+      c.req.method === 'HEAD' ? null : response.Body as ReadableStream,
+      { headers },
+    );
+  } catch (error) {
+    console.error('Error downloading artifact:', error);
     return c.json({ error: 'Artifact not found' }, 404);
   }
-
-  // Set headers
-  c.header('Content-Type', 'application/octet-stream');
-  c.header('Content-Length', artifactMetadata[hash].size.toString());
-
-  if (artifactMetadata[hash].tag) {
-    c.header('x-artifact-tag', artifactMetadata[hash].tag);
-  }
-
-  // Return the artifact data
-  return new Response(c.req.method === 'HEAD' ? null : artifactStorage[hash], {
-    headers: {
-      'Content-Type': 'application/octet-stream',
-      'Content-Length': artifactMetadata[hash].size.toString(),
-      ...(artifactMetadata[hash].tag
-        ? { 'x-artifact-tag': artifactMetadata[hash].tag }
-        : {}),
-    },
-  });
 });
 
 // POST /v8/artifacts
 app.post('/v8/artifacts', async (c: Context) => {
   try {
-    const { hashes } = await c.req.json() as ArtifactQueryRequest;
+    const { hashes } = await c.req.json<ArtifactQueryRequest>();
 
     if (!Array.isArray(hashes)) {
       return c.json({ error: 'Invalid request body' }, 400);
@@ -162,15 +190,21 @@ app.post('/v8/artifacts', async (c: Context) => {
 
     const response: ArtifactQueryResponse = {};
 
-    // Query information about each artifact
     for (const hash of hashes) {
-      if (artifactStorage[hash]) {
+      try {
+        const command = new HeadObjectCommand({
+          Bucket: BUCKET_NAME,
+          Key: `artifacts/${hash}`,
+        });
+
+        const result = await s3Client.send(command);
+
         response[hash] = {
-          size: artifactMetadata[hash].size,
-          taskDurationMs: 0, // This would be stored in a real implementation
-          tag: artifactMetadata[hash].tag,
+          size: result.ContentLength || 0,
+          taskDurationMs: parseInt(result.Metadata?.duration || '0'),
+          tag: result.Metadata?.tag,
         };
-      } else {
+      } catch (error) {
         response[hash] = {
           error: {
             message: 'Artifact not found',
